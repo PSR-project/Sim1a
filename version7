@@ -111,12 +111,12 @@ def collision(wallWavelength_c, wallAmplitude_c, averageRadius_c, x, z, vx, vz, 
     if z > 0:
       collisionPointX = fsolve(intersectionTop, x, xtol=solverPrecision)[0]
       if abs(collisionPointX - pColX) < solverPrecision:
-        collisionPointX = fsolve(intersectionTop, x+vx*timeStep_c/2, xtol=solverPrecision)[0]
+        collisionPointX = fsolve(intersectionTop, x+vx*timeStep_c, xtol=solverPrecision)[0]
       collisionPointZ = wallFunction(collisionPointX)
     else:
       collisionPointX = fsolve(intersectionBottom, x, xtol=solverPrecision)[0]
       if abs(collisionPointX - pColX) < solverPrecision:
-        collisionPointX = fsolve(intersectionBottom, x+vx*timeStep_c/2, xtol=solverPrecision)[0]
+        collisionPointX = fsolve(intersectionBottom, x+vx*timeStep_c, xtol=solverPrecision)[0]
       collisionPointZ = -1*wallFunction(collisionPointX)
 
   # we want to bounce the particle off the wall's tangent line at the collision point
