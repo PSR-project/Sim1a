@@ -1,0 +1,574 @@
+import numpy as np
+from scipy.optimize import fsolve
+import matplotlib.pyplot as plt #*** Line added by Martin on 23-Oct-2020.
+from google.colab import drive
+import os
+import csv
+from datetime import datetime
+drive.mount('/drive')
+#Written by Alec Lau, last updated Oct. 19, 2020
+
+solverPrecision = 1e-6
+
+'''
+Helper function to initialize coordinates and velocity
+
+Parameters:
+- S_i, the spatial wavelength of the sinusoidal walls
+- A_i, the amplitude of the sinusoidal walls
+- Z0_i, the average radius of the tube (the radius of tube at x is Z0+A*sin(2pi*x/S))
+- v_flow, the initial flow velocity in the x direction (z component identically 
+  0 for every set of parameters)
+- variance, the variance of the distribution from which the magnitude of the 
+  random velocities are drawn
+- timestepNum, the number of time steps in the simulation (an int)
+- xc (optional), a custom x initial coordinate
+- zc (optional), a custom z initial coordinate
+- vxc (optional), a custom x initial velocity
+- vzc (optional), a custom z initial velocity
+
+Returns:
+- initial x coordinate in the first index
+- initial z coordinate in the first index
+- initial x velocity in the first index
+- initial z velocity in the first index
+'''
+def initializeParticleArrays(wallWavelength_i, wallAmplitude_i, averageRadius_i, 
+                initialFlow, variance, xc=None, zc=None, vxc=None, vzc=None):
+  #if custom values given, account for that in code below
+  initialX = xc
+  if xc == None:
+    initialX = wallWavelength_i*np.random.random_sample() # continuous uniform distribution
+  initialZ = zc
+  if zc == None:
+    #choose point within the outer radius to assure uniformity
+    initialZ = 2*(wallAmplitude_i+averageRadius_i)*np.random.random_sample() - wallAmplitude_i - averageRadius_i
+    initialZRange = averageRadius_i+wallAmplitude_i*np.cos(2*np.pi*initialX/wallWavelength_i)
+    while abs(initialZ) > initialZRange: # ensures z is within range
+      initialZ = 2*(wallAmplitude_i+averageRadius_i)*np.random.random_sample() - wallAmplitude_i - averageRadius_i
+
+  #magnitudes have normal distribution, 0 mean, same variance (which was an input)
+  randomX = np.random.normal(scale=np.sqrt(variance))
+  randomZ = np.random.normal(scale=np.sqrt(variance))
+
+  #if custom values given, account for that in code below
+  initialVx, initialVz = vxc, vzc
+  if vxc == None:
+    initialVx = randomX + initialFlow
+  if vzc == None:
+    initialVz = randomZ
+  
+  return initialX, initialZ, initialVx, initialVz
+
+'''
+Given slope, point, and a variable, calculates y = mx+b from point-slope formula
+'''
+
+def linear(slope, x_point, z_point, variable):
+  #used in collision function to solve for collision point
+  return slope*variable - slope*x_point + z_point
+
+'''
+Helper function for determining next coordinate after collision with sinusoidal
+walls. Uses scipy's fsolve function for finding the most accurate intersection point
+available to python
+
+Inputs:
+- wallWavelength, wallAmplitude, averageRadius
+- x, the x coordinate before the collision
+- z, the z coordinate before the collision
+- vx, the x velocity before the collision
+- vz, the z velocity before the collision
+- timeStep, the timestep of the simulation
+
+Returns:
+- xAfter, the x coordinate after the collision
+- zAfter, the z coordinate after the collision
+- collisionPointX, the x coordinate of the collision point
+- collisionPointZ, the z coordinate of the collision point
+- vxAfter, the x velocity after the collision
+- vzAfter, the z velocity after the collision
+- timeAtCol, the time taken to get to the collision point
+'''
+
+def collision(wallWavelength_c, wallAmplitude_c, averageRadius_c, x, z, vx, vz, timeStep_c, wallFunction, pColX, pColZ):
+  # find where the particle hits the wall. This is a nonlinear algebraic equation,
+  # so we use scipy's fsolve function to find this in the code below
+  collisionPointX = 0.0
+  collisionPointZ = 0.0
+
+  if vx == 0:
+    collisionPointX = x
+    collisionPointZ = z/abs(z)*wallFunction(x)
+  else:
+    # define the position function given the data. Want to find when wall function = position function
+    def intersectionTop(intersectionVariable):
+      return wallFunction(intersectionVariable) - ((vz/vx)*intersectionVariable - (vz/vx)*x + z)
+    # account for bottom wall too.
+    def intersectionBottom(intersectionVariable):
+      return -1*wallFunction(intersectionVariable) - ((vz/vx)*intersectionVariable - (vz/vx)*x + z)
+    
+    if z > 0:
+      collisionPointX = fsolve(intersectionTop, x, xtol=solverPrecision)[0]
+      if abs(collisionPointX - pColX) < solverPrecision:
+        collisionPointX = fsolve(intersectionTop, x+vx*timeStep_c/2, xtol=solverPrecision)[0]
+      collisionPointZ = wallFunction(collisionPointX)
+    else:
+      collisionPointX = fsolve(intersectionBottom, x, xtol=solverPrecision)[0]
+      if abs(collisionPointX - pColX) < solverPrecision:
+        collisionPointX = fsolve(intersectionBottom, x+vx*timeStep_c/2, xtol=solverPrecision)[0]
+      collisionPointZ = -1*wallFunction(collisionPointX)
+
+  # we want to bounce the particle off the wall's tangent line at the collision point
+  tangentLineSlope = -wallAmplitude_c*np.sin(2*np.pi*collisionPointX/wallWavelength_c)*2*np.pi/wallWavelength_c
+
+  # this entails us reflecting the velocity about a unit vector normal to the tangent point
+  # thus we need the angle. Since we have the slope, the angle is arctan of that (arctan(slope)).
+
+  # the change in x of the UNIT tangent vector is then cos(arctan(slope)), or 1/(1+slope^2),
+  # so the change in x of the UNIT NORMAL vector is sin(arctan(slope)), or slope/(1+slope^2)
+  unitNormalRun = tangentLineSlope/np.sqrt(1+tangentLineSlope**2)
+  # the change in z of the UNIT tangent vector is then sin(arctan(slope)), or slope/(1+slope^2),
+  #so the change in z of the UNIT NORMAL vector is then -cos(arctan(slope)), or -1/(1+slope^2)
+
+  # this was assuming the normal vector will point down, i.e. rotated the tangent vector
+  # at the top wall by -pi/2 radians. If the particle hits the lower wall, we need to rotate
+  # the tangent vector by +pi/2 radians instead, hence the factor of z/abs(z) at the end
+  unitNormalRise = -1/np.sqrt(1+tangentLineSlope**2)*z/abs(z)
+  
+  # once we have our unit normal vector N, the formula for the reflected velocity is -2(N dot V)N - V
+  vxAfter = -2*(unitNormalRun*vx+unitNormalRise*vz)*unitNormalRun + vx
+  vzAfter = -2*(unitNormalRun*vx+unitNormalRise*vz)*unitNormalRise + vz
+
+  # now we need to find the distance traveled after the collision, as the collsion is in the middle of
+  # the current timestep. Take the distance from the previous point to the collision, divide by the
+  # magnitude of the velocity, and subtract this from the timestep
+  timeAtCol = np.sqrt(((x-collisionPointX)**2+(z-collisionPointZ)**2)/(vx**2+vz**2))
+  timeLeft = timeStep_c - timeAtCol
+
+  xAfter = collisionPointX + vxAfter*timeLeft
+  zAfter = collisionPointZ + vzAfter*timeLeft
+  return xAfter, zAfter, collisionPointX, collisionPointZ, vxAfter, vzAfter, timeAtCol
+
+
+'''
+Function for simulating a single particle according to the specs 
+given for S1. It takes a particle object and evolves its position, velocity, and
+collision count.
+
+Inputs:
+- S, the spatial wavelength of the sinusoidal walls
+- A, the amplitude of the sinusoidal walls
+- Z0, the average radius of the tube
+- vf, the initial flow velocity in the x direction
+- vr_var, the variance of the random initial velocity
+- t, the simulation time
+- Xc (optional), a custom x initial coordinate
+- Zc (optional), a custom z initial coordinate
+- Vxc (optional), a custom x initial velocity
+- Vzc (optional), a custom z initial velocity
+
+Returns:
+- X, an array of x coordinates with indices at each timestep
+- Z, an array of z coordinates with indices at each timestep
+- Vx, an array of x velocity with indices at each timestep
+- Vz, an array of z velocity with indices at each timestep
+- B_t, the number of collisions during the run
+'''
+
+##################################################################################
+##################################################################################
+################################# Sim 1b #########################################
+##################################################################################
+##################################################################################
+
+from bokeh.layouts import gridplot
+from bokeh.plotting import figure, output_file, show
+from bokeh.models import HoverTool
+from bokeh.io import output_notebook
+
+output_notebook()
+
+def plotFirstTrajectory(dataMatrix, wall_plot, wallWavelength_plot, numSims_plot):
+  index = 0
+  difference = 0
+  lastSimIndex = 0
+  sim_number = 0
+  for time in reversed(dataMatrix["time"]):
+    if time == 0:
+      difference = lastSimIndex - index
+      sim_number += 1
+      lastSimIndex = index
+    index -= 1
+    if sim_number == numSims_plot:
+      break
+  X_array = dataMatrix["X"][index:index+difference]
+  Z_array = dataMatrix["Z"][index:index+difference]
+  x_max = np.amax(X_array)
+  x_min = np.amin(X_array)
+  x_coords = np.linspace(x_min, max(x_max,x_min+30*wallWavelength_plot), 
+                       max(10000,len(X_array)))
+
+  TOOLS = "pan,wheel_zoom,box_zoom,reset,save,box_select,hover"
+
+  p1 = figure(title="Example trajectory: first particle in this set of simulation runs:", tools=TOOLS, plot_width=1000, plot_height=400)
+
+  p1.line(X_array, Z_array, color="blue")
+  p1.line(x_coords, wall_plot(x_coords), color="orange")
+  p1.line(x_coords, -wall_plot(x_coords), color="orange")
+  source = dict(
+    hoverX=X_array,
+    hoverZ=Z_array
+  )
+
+
+  p1.add_tools(HoverTool(
+    tooltips=[
+    ("(x,y)", "($hoverX, $hoverZ)")]
+  ))
+  show(p1)
+
+
+def plotInitialCoordinates(dataMatrix, wall_plot):
+  initialX = []
+  initialZ = []
+  index = 0
+  for time in dataMatrix["time"]:
+    if time == 0:
+      initialX.append(dataMatrix["X"][index])
+      initialZ.append(dataMatrix["Z"][index])
+    index += 1
+  plt.scatter(initialX, initialZ)
+  wall_coords = np.linspace(np.amin(initialX), np.amax(initialX), 500)
+  plt.plot(wall_coords, wall_plot(wall_coords), color="orange")
+  plt.plot(wall_coords, -wall_plot(wall_coords), color="orange")
+  plt.xlabel('x')
+  plt.ylabel('z')
+  plt.title("Initial positions")
+  plt.show()
+
+def plotVelocityModuli(dataMatrix, binNumber):
+  moduli = []
+  index = 0
+  for i in dataMatrix["numCols"]:
+    if i == 0:
+      moduli.append(np.sqrt(dataMatrix["Vx"][index]**2 + dataMatrix["Vz"][index]**2))
+    index += 1
+  _ = plt.hist(moduli, bins=binNumber)
+  plt.xlabel('|V|')
+  plt.ylabel('Frequency')
+  plt.title('Velocity Modulus Scales')
+  plt.show()
+
+def giveFinalPositions(dataMatrix):
+  finalX = []
+  finalZ = []
+  index = 0
+  for i in dataMatrix["time"]:
+    if i == time_test:
+      finalX.append(dataMatrix["X"][index])
+      finalZ.append(dataMatrix["Z"][index])
+    index += 1
+  return finalX, finalZ
+
+def plotFinalCoordinates(dataMatrix):
+  finalX_a, finalZ_a = giveFinalPositions(dataMatrix)
+  plt.scatter(finalX_a, finalZ_a)
+  plt.xlabel('x')
+  plt.ylabel('z')
+  plt.title("Final positions")
+  plt.show()
+
+def plotFinalCoordinateFractions(dataMatrix, wavelength, wall_plot):
+  finalX_a, finalZ_a = giveFinalPositions(dataMatrix)
+  for i in range(0, len(finalX_a)):
+    finalX_a[i] = finalX_a[i] % wavelength
+  plt.scatter(finalX_a, finalZ_a)
+  wall_coords = np.linspace(0.0, 1.0, 201)
+  plt.plot(wall_coords, wall_plot(wall_coords), color="orange")
+  plt.plot(wall_coords, -wall_plot(wall_coords), color="orange")
+  plt.xlabel('x')
+  plt.ylabel('z')
+  plt.title("Final positions within wall wavelength")
+  plt.show()
+
+def plotVelocityTimes(dataMatrix, initialFlow_p, velocityVariance_p, time_plot):
+  t0X = []
+  t0Z = []
+  tHalfX = []
+  tHalfZ = []
+  tFullX = []
+  tFullZ = []
+  for index in range(0, len(dataMatrix["time"])):
+    time = dataMatrix["time"][index]
+    if time == 0.0:
+      t0X.append(dataMatrix["Vx"][index])
+      t0Z.append(dataMatrix["Vz"][index])
+    elif time == time_plot:
+      tFullX.append(dataMatrix["Vx"][index])
+      tFullZ.append(dataMatrix["Vz"][index])
+    elif time_plot/2 >= time and dataMatrix["time"][index+1] >= time_plot/2:
+      tHalfX.append(dataMatrix["Vx"][index])
+      tHalfZ.append(dataMatrix["Vz"][index])
+  # Below ensures the scaling of the three scatter plots are the same:
+  max_c = np.ceil(initialFlow_p + 4*velocityVariance_p)
+  min_c = -1*max_c
+
+  plt.figure(figsize=(4,4))
+  plt.scatter(t0X, t0Z)
+  plt.xlabel("Vx"), plt.ylabel("Vz")
+  plt.xlim(min_c, max_c), plt.ylim(min_c, max_c)
+  plt.title("t = 0")
+  plt.show()
+
+  plt.figure(figsize=(4,4))
+  plt.scatter(tHalfX, tHalfZ)
+  plt.xlabel("Vx"), plt.ylabel("Vz")
+  plt.xlim(min_c, max_c), plt.ylim(min_c, max_c)
+  plt.title("t = T/2")
+  plt.show()
+
+  plt.figure(figsize=(4,4))
+  plt.scatter(tFullX, tFullZ)
+  plt.xlabel("Vx"), plt.ylabel("Vz")
+  plt.xlim(min_c, max_c), plt.ylim(min_c, max_c)
+  plt.title("t = T")
+  plt.show()
+
+
+def averageVelocities(dataMatrix, numberIntervals, time_plot):
+  numSimulations = 0
+  averageVelocityX = np.zeros(numberIntervals+1)
+  averageVelocityZ = np.zeros(numberIntervals+1)
+  aveModuli = np.zeros(numberIntervals+1)
+  intervalIndex = 0
+  timeInterval = time_plot/numberIntervals
+  for index in range(0, len(dataMatrix["time"])):
+    time = dataMatrix["time"][index]
+    if time == 0:
+      numSimulations += 1
+      intervalIndex = 0
+    else:
+      while intervalIndex*timeInterval <= time:
+        averageVelocityX[intervalIndex] += dataMatrix["Vx"][index-1]
+        averageVelocityZ[intervalIndex] += dataMatrix["Vz"][index-1]
+        aveModuli[intervalIndex] += np.sqrt(dataMatrix["Vx"][index-1]**2+dataMatrix["Vz"][index-1]**2)
+        intervalIndex += 1
+  averageVelocityX /= numSimulations
+  averageVelocityZ /= numSimulations
+  aveModuli /= numSimulations
+  
+  timeCoords = np.linspace(0.0, time_plot, numberIntervals+1)
+  fig, (ax1, ax2) = plt.subplots(2)
+  fig.suptitle('Average velocities in time intervals')
+  ax2.set(xlabel='Time')
+  ax1.set(ylabel='Average Vx'), ax2.set(ylabel='Average Vz')
+  ax1.plot(timeCoords, averageVelocityX)
+  ax2.plot(timeCoords, averageVelocityZ)
+  plt.show(fig)
+
+  plt.plot(timeCoords, aveModuli)
+  plt.xlabel("Time")
+  plt.ylabel("Average |V|")
+  plt.title("Average velocity modulus vs. time")
+  plt.show()
+
+
+def plotBounces(dataMatrix, numberIntervals, time_plot):
+  numSimulations = 0
+  numClumps = 0 # number of instances where the particle hits the same wall >= twice (clumps of consecutive bounces)
+  numRepeatBounces = 0 # number of consecutive bounces
+  simIndex = 0
+  bouncesHist = np.zeros(9)
+  averageNumberConsecutiveBounces = np.zeros(numberIntervals+1)
+  averageNumberClumps = np.zeros(numberIntervals+1)
+  intervalIndex = 0
+  nthBounce = 0
+  sign = 0
+  prevSign = 0
+  for simIndex in range(0, len(dataMatrix["time"])):
+    time = dataMatrix["time"][simIndex]
+    #################################################
+    # ensure we're getting coordinates of a collision
+    if time != 0 and time != time_plot:
+      ########################################
+      # determine if consecutive bounce or not
+      if dataMatrix["Z"][simIndex] < 0.0:
+        sign = -1
+      else:
+        sign = 1
+      ########################################
+      if prevSign == sign:
+        nthBounce += 1
+        if nthBounce == 2:
+          numClumps += 1
+        numRepeatBounces += 1
+      else:
+        # add data to histogram
+        if nthBounce > 8:
+          #print(simIndex, nthBounce) # uncomment to see if the bug happens again
+          bouncesHist[-1] += 1
+        elif nthBounce > 0:
+          bouncesHist[nthBounce-1] += 1
+        nthBounce = 1
+      prevSign = sign
+      while intervalIndex*time_plot/numberIntervals <= time:
+        averageNumberClumps[intervalIndex] += numClumps
+        averageNumberConsecutiveBounces[intervalIndex] += numRepeatBounces
+        intervalIndex += 1
+    #################################################
+    # time edge cases (t=0, t=T)
+    elif time == 0:
+      nthBounce = 0
+      intervalIndex = 0
+      numClumps = 0
+      numRepeatBounces = 0
+      sign = 0
+      prevSign = 0
+      numSimulations += 1
+    else:
+      if numRepeatBounces > 1000:
+        break
+      while intervalIndex*time_plot/numberIntervals <= time:
+        averageNumberClumps[intervalIndex] += numClumps
+        averageNumberConsecutiveBounces[intervalIndex] += numRepeatBounces
+        intervalIndex += 1
+  
+  # plotting histogram
+  bouncesHist /= numSimulations
+  x = ['1', '2', '3', '4', '5', '6', '7', '8', '>8']
+  plt.bar(x, bouncesHist)
+  plt.xlabel("Average number of bounces on same wall")
+  plt.ylabel("Frequency")
+  plt.title("Frequency of bounces on same wall")
+  plt.yscale('log')
+  plt.show()
+
+  # now plotting average number of multiple bounce clumps vs time
+  averageNumberClumps /= numSimulations
+  timeCoords = np.linspace(0.0, time_plot, numberIntervals+1)
+  plt.title("Average number of multiple bounce instances vs time")
+  plt.xlabel("Time")
+  plt.ylabel("Average multiple bounce instances")
+  plt.plot(timeCoords, averageNumberClumps)
+  plt.show()
+
+  # now plotting average number of consecutive bounces vs time
+  averageNumberConsecutiveBounces /= numSimulations
+  plt.title("Average number of consecutive bounces vs time")
+  plt.xlabel("Time")
+  plt.ylabel("Average consecutive bounces")
+  plt.plot(timeCoords, averageNumberConsecutiveBounces)
+
+##################################################################################
+##################################################################################
+##################################################################################
+
+def sim1(wallWavelength, wallAmplitude, averageRadius, initialFlow, velocityVariance, time, Xc=None, Zc=None, Vxc=None, Vzc=None):
+  # we want to discretize time to be fine enough so that the simulation is useful
+  # i.e. we want to be able to tell when a collision needs to be calculated
+  X, Z, Vx, Vz = initializeParticleArrays(wallWavelength, wallAmplitude, averageRadius, initialFlow, velocityVariance, Xc, Zc, Vxc, Vzc)
+  numberOfCollisions = 0
+  fileName = "PSR_sim1_runData_"+str(wallAmplitude_test)+"_"+str(averageRadius_test)+"_"+str(initialFlow_test)+"_"+str(time_test)+".csv"
+  if not os.path.isfile(fileName):
+    with open(fileName, 'w', newline='') as file:
+      writer = csv.writer(file)
+      writer.writerow(["collision number", "time of collision", "x-coord", "z-coord", "x-velocity", "z-velocity", "date-time"])
+      file.close()
+      print("File at: "+str(os.path))
+
+  if Vx == 0.0 and Vz == 0.0: # for robustness' sake
+    X, Z, Vx, Vz = initializeParticleArrays(wallWavelength, wallAmplitude, averageRadius, initialFlow, velocityVariance, Xc, Zc, Vxc, Vzc)
+  # added 1e-4 to abs(Vx) to ensure the denominator is never equal to 0
+  deltaT = min(wallWavelength/5, wallWavelength/((np.sqrt(Vx**2+Vz**2)+1e-4)*10)) # finds time step size
+  #calculate wall function given the dimensions that were input
+  def wallFunction(wallFunctionVariable):
+    return averageRadius+wallAmplitude*np.cos(2*np.pi*wallFunctionVariable/wallWavelength)
+  pastX = X
+  pastZ = Z
+  # for error correction:
+  prevColX, prevColZ = 0.0, 0.0
+
+  initialTime = time
+  with open(fileName, 'a', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerow([numberOfCollisions, 0.0, X, Z, Vx, Vz, datetime.now()])
+    while time > 0:
+      futureVx = Vx
+      futureVz = Vz
+      deltaT = min(wallWavelength/5, wallWavelength/((np.sqrt(futureVx**2+futureVz**2)+1e-4)*10*(abs(pastZ)+1e-4)))
+      if time < deltaT: #ensures the final coordinate is recorded
+        deltaT = time
+      #step the x and z positions one timestep
+      futureX = pastX + Vx*deltaT
+      futureZ = pastZ + Vz*deltaT
+      #check to see if this step is actually a step over a wall, and hence a collision
+      if abs(futureZ) >= averageRadius+wallAmplitude*np.cos(2*np.pi*futureX/wallWavelength):
+        #get new coordinates, velocities, and collision coordinates
+        futureX, futureZ, collisionX, collisionZ, futureVx, futureVz, timeCol = collision(wallWavelength, wallAmplitude, averageRadius, pastX, pastZ, futureVx, futureVz, deltaT, wallFunction, prevColX, prevColZ)
+        # for error correction
+        prevColX, prevColZ = collisionX, collisionZ
+        numberOfCollisions += 1
+        #add this new data to our arrays
+        writer.writerow([numberOfCollisions, initialTime-time+timeCol, collisionX, collisionZ, futureVx, futureVz, datetime.now()])
+        if time == deltaT:
+          # if it's the remaining time, record where it ends up instead of where it hits
+          writer.writerow([numberOfCollisions, initialTime, futureX, futureZ, futureVx, futureVz, datetime.now()])
+        Vx = futureVx
+        Vz = futureVz
+      elif time == deltaT:
+        # record final coordinate if our remaining time is less than what our calculated
+        # deltaT would be, AND if there was no collision.
+        writer.writerow([numberOfCollisions, initialTime, futureX, futureZ, futureVx, futureVz, datetime.now()])
+      else: # check if it's crossing the other boundary, then we can skip a lot of computations
+        if abs(pastZ) >= averageRadius-wallAmplitude and abs(futureZ) < averageRadius-wallAmplitude:
+          if pastZ < 0: #going from lower to upper
+            futureX = (averageRadius - wallAmplitude + futureVz*pastX/futureVx - pastZ)*futureVx/futureVz
+            futureZ = averageRadius - wallAmplitude
+          else: #going from upper to lower
+            futureX = (-averageRadius + wallAmplitude + futureVz*pastX/futureVx - pastZ)*futureVx/futureVz
+            futureZ = -averageRadius + wallAmplitude
+          #we now have our new coordinates - we skipped across the gap to the other side of the tube
+          #now we have to calculate how much time that took
+          deltaT = np.sqrt(((futureX-pastX)**2+(futureZ-pastZ)**2)/(futureVx**2+futureVz**2))
+          #check to see if this time difference if larger than the time left. If so, just travel with time left
+          if deltaT > time:
+            writer.writerow([numberOfCollisions, initialTime, pastX+futureVx*time, pastZ+futureVz*time, futureVx, futureVz, datetime.now()])
+            deltaT = time
+      pastX = futureX
+      pastZ = futureZ
+      time -= deltaT
+  return numberOfCollisions
+
+#################################################################################
+
+def runSimulations(wallWavelength_t, wallAmplitude_t, averageRadius_t, initialFlow_t, velocityVariance_t, time_t, number_sims):
+  def wall(x):
+    return averageRadius_t + wallAmplitude_t*np.cos(2*np.pi*x/wallWavelength_t)
+  fileName = "PSR_sim1_runData_"+str(wallAmplitude_t)+"_"+str(averageRadius_t)+"_"+str(initialFlow_t)+"_"+str(time_t)+".csv"
+
+  initialCollisionNumber = 0
+  for i in range(0, number_sims):
+    c = sim1(wallWavelength_t, wallAmplitude_t, averageRadius_t, initialFlow_t, velocityVariance_t, time_t)
+    if i == 0:
+      initialCollisionNumber = c
+
+  data = np.genfromtxt(fileName, delimiter=",", names=["numCols","time","X","Z","Vx","Vz"])[1:]
+
+  print("Wall wavelength: "+str(wallWavelength_t)+" & amplitude: "+str(wallAmplitude_t))
+  print("Initial coordinates: "+str(data["X"][0])+", "+str(data["Z"][0]))
+  print("Initial velocity: "+str(data["Vx"][0])+", "+str(data["Vz"][0]))
+  print("Initial velocity modulus: "+str(np.sqrt(data["Vx"][0]**2+data["Vz"][0]**2)))
+  print("Number of collisions: "+str(initialCollisionNumber))
+  plotFirstTrajectory(data, wall, wallWavelength_t, number_sims)
+
+  return data, wall
+
+def visualize(dataFile, wallFunction, wallWavelength_v, initialFlow_v, velocityVariance_v, time_v, averageVelocityPlotBinNumber=20, numTimeIntervals=200):
+  plotInitialCoordinates(dataFile, wallFunction)
+  plotFinalCoordinates(dataFile)
+  plotFinalCoordinateFractions(dataFile, wallWavelength_v, wallFunction)
+  plotVelocityModuli(dataFile, averageVelocityPlotBinNumber)
+  plotVelocityTimes(dataFile, initialFlow_v, velocityVariance_v, time_v)
+  averageVelocities(dataFile, numTimeIntervals, time_v)
+  plotBounces(dataFile, numTimeIntervals, time_v)
