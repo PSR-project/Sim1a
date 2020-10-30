@@ -1,0 +1,30 @@
+X_array = data_test["X"][111415:111585]
+Z_array = data_test["Z"][111415:111585]
+
+x_max = np.amax(X_array)
+x_min = np.amin(X_array)
+x_coords = np.linspace(x_min, max(x_max,x_min+30*wallWavelength_test), 
+                       max(10000,len(X_array)))
+
+TOOLS = "pan,wheel_zoom,box_zoom,reset,save,box_select,hover"
+
+p1 = figure(title="Example trajectory: first particle in this set of simulation runs:", tools=TOOLS, plot_width=1000, plot_height=400)
+
+def wall_plot(x):
+    return averageRadius_test + wallAmplitude_test*np.cos(2*np.pi*x/wallWavelength_test)
+
+
+p1.line(X_array, Z_array, color="blue")
+p1.line(x_coords, wall_plot(x_coords), color="orange")
+p1.line(x_coords, -wall_plot(x_coords), color="orange")
+source = dict(
+  hoverX=X_array,
+  hoverZ=Z_array
+)
+
+
+p1.add_tools(HoverTool(
+  tooltips=[
+  ("(x,y)", "($hoverX, $hoverZ)")]
+))
+show(p1)
