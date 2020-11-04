@@ -189,21 +189,14 @@ from bokeh.io import output_notebook
 
 output_notebook()
 
-def plotFirstTrajectory(dataMatrix, wall_plot, wallWavelength_plot, numSims_plot):
-  index = 0
-  difference = 0
-  lastSimIndex = 0
-  sim_number = 0
+def plotLastTrajectory(dataMatrix, wall_plot, wallWavelength_plot, wallAmp, numSims_plot):
+  index = -1
   for time in reversed(dataMatrix["time"]):
-    if time == 0:
-      difference = lastSimIndex - index
-      sim_number += 1
-      lastSimIndex = index
-    index -= 1
-    if sim_number == numSims_plot:
+    if time == 0.0:
       break
-  X_array = dataMatrix["X"][index:index+difference]
-  Z_array = dataMatrix["Z"][index:index+difference]
+    index -= 1
+  X_array = dataMatrix["X"][index:-1]
+  Z_array = dataMatrix["Z"][index:-1]
   x_max = np.amax(X_array)
   x_min = np.amin(X_array)
   x_coords = np.linspace(x_min, max(x_max,x_min+30*wallWavelength_plot), 
@@ -211,7 +204,7 @@ def plotFirstTrajectory(dataMatrix, wall_plot, wallWavelength_plot, numSims_plot
 
   TOOLS = "pan,wheel_zoom,box_zoom,reset,save,box_select,hover"
 
-  p1 = figure(title="Example trajectory: first particle in this set of simulation runs:", tools=TOOLS, plot_width=1000, plot_height=400)
+  p1 = figure(title="Example trajectory: very last particle in this set of simulation runs:", tools=TOOLS, plot_width=1000, plot_height=400)
 
   p1.line(X_array, Z_array, color="blue")
   p1.line(x_coords, wall_plot(x_coords), color="orange")
@@ -221,20 +214,12 @@ def plotFirstTrajectory(dataMatrix, wall_plot, wallWavelength_plot, numSims_plot
     hoverZ=Z_array
   )
 
-
   p1.add_tools(HoverTool(
     tooltips=[
     ("(x,y)", "($hoverX, $hoverZ)")]
   ))
   show(p1)
-
-def printInfo(dataMatrix, wavelength, amp):
-  index = -1
-  for time in reversed(dataMatrix["time"]):
-    if time == 0.0:
-      break
-    index -= 1
-  print("Wall wavelength: "+str(wavelength)+" & amplitude: "+str(amp))
+  print("Wall wavelength: "+str(wallWavelength_plot)+" & amplitude: "+str(wallAmp))
   print("Initial coordinates: "+str(dataMatrix["X"][index])+", "+str(dataMatrix["Z"][index]))
   print("Initial velocity: "+str(dataMatrix["Vx"][index])+", "+str(dataMatrix["Vz"][index]))
   print("Initial velocity modulus: "+str(np.sqrt(dataMatrix["Vx"][index]**2+dataMatrix["Vz"][index]**2)))
@@ -242,9 +227,10 @@ def printInfo(dataMatrix, wavelength, amp):
   print("Final coordinates: "+str(dataMatrix["X"][-1])+", "+str(dataMatrix["Z"][-1]))
   print("Final velocity: "+str(dataMatrix["Vx"][-1])+", "+str(dataMatrix["Vz"][-1]))
   print("Final velocity modulus: "+str(np.sqrt(dataMatrix["Vx"][-1]**2+dataMatrix["Vz"][-1]**2)))
+  print();print()
   return
 
-def plotInitialCoordinates(dataMatrix, wall_plot, aveRadius, amp):
+def plotInitialCoordinates(dataMatrix, wall_plot, wavelength, aveRadius, amp):
   initialX = []
   initialZ = []
   index = 0
@@ -254,14 +240,16 @@ def plotInitialCoordinates(dataMatrix, wall_plot, aveRadius, amp):
       initialZ.append(dataMatrix["Z"][index])
     index += 1
   plt.scatter(initialX, initialZ)
-  wall_coords = np.linspace(np.amin(initialX), np.amax(initialX), 500)
+  wall_coords = np.linspace(0, wavelength, 500)
   plt.plot(wall_coords, wall_plot(wall_coords), color="orange")
   plt.plot(wall_coords, -wall_plot(wall_coords), color="orange")
   plt.xlabel('x')
   plt.ylabel('z')
+  plt.xlim((0,wavelength))
   plt.ylim((-aveRadius-amp*1.5,aveRadius+amp*1.5))
   plt.title("Initial positions")
   plt.show()
+  return
 
 def plotVelocityModuli(dataMatrix, binNumber):
   moduli = []
@@ -275,6 +263,7 @@ def plotVelocityModuli(dataMatrix, binNumber):
   plt.ylabel('Frequency')
   plt.title('Velocity Modulus Scales')
   plt.show()
+  return
 
 def giveFinalPositions(dataMatrix):
   finalX = []
@@ -295,6 +284,7 @@ def plotFinalCoordinates(dataMatrix, aveRadius, amp):
   plt.ylim((-aveRadius-amp*1.5,aveRadius+amp*1.5))
   plt.title("Final positions")
   plt.show()
+  return
 
 def plotFinalCoordinateFractions(dataMatrix, wavelength, wall_plot, aveRadius, amp):
   finalX_a, finalZ_a = giveFinalPositions(dataMatrix)
@@ -309,6 +299,7 @@ def plotFinalCoordinateFractions(dataMatrix, wavelength, wall_plot, aveRadius, a
   plt.ylim((-aveRadius-amp*1.5,aveRadius+amp*1.5))
   plt.title("Final positions within wall wavelength")
   plt.show()
+  return
 
 def plotVelocityAtTime(dataMatrix, initialFlow_p, velocityVariance_p, snapshotTime):
   tX = []
@@ -327,6 +318,7 @@ def plotVelocityAtTime(dataMatrix, initialFlow_p, velocityVariance_p, snapshotTi
   plt.xlim(min_c, max_c), plt.ylim(min_c, max_c)
   plt.title("t = "+str(snapshotTime))
   plt.show()
+  return
 
 
 def averageVelocities(dataMatrix, numberIntervals, time_plot, initialFlow):
@@ -366,6 +358,7 @@ def averageVelocities(dataMatrix, numberIntervals, time_plot, initialFlow):
   plt.ylim((initialFlow-1,initialFlow+1))
   plt.title("Average velocity modulus vs. time")
   plt.show()
+  return
 
 
 def plotBounces(dataMatrix, numberIntervals, time_plot):
@@ -486,7 +479,7 @@ def sim1(wallWavelength, wallAmplitude, averageRadius, initialFlow, velocityVari
   initialTime = time
   with open(fileName, 'a', newline='') as file:
     writer = csv.writer(file)
-    writer.writerow([numberOfCollisions, 0.0, X, Z, Vx, Vz, datetime.now(), particleNumber])
+    writer.writerow([numberOfCollisions, 0.0, X, Z, Vx, Vz, datetime.now(), particleNumber+1])
     while time > 0:
       futureVx = Vx
       futureVz = Vz
@@ -504,16 +497,16 @@ def sim1(wallWavelength, wallAmplitude, averageRadius, initialFlow, velocityVari
         prevColX, prevColZ = collisionX, collisionZ
         numberOfCollisions += 1
         #add this new data to our arrays
-        writer.writerow([numberOfCollisions, initialTime-time+timeCol, collisionX, collisionZ, futureVx, futureVz, datetime.now(), particleNumber])
+        writer.writerow([numberOfCollisions, initialTime-time+timeCol, collisionX, collisionZ, futureVx, futureVz, datetime.now(), particleNumber+1])
         if time == deltaT:
           # if it's the remaining time, record where it ends up instead of where it hits
-          writer.writerow([numberOfCollisions, initialTime, futureX, futureZ, futureVx, futureVz, datetime.now(), particleNumber])
+          writer.writerow([numberOfCollisions, initialTime, futureX, futureZ, futureVx, futureVz, datetime.now(), particleNumber+1])
         Vx = futureVx
         Vz = futureVz
       elif time == deltaT:
         # record final coordinate if our remaining time is less than what our calculated
         # deltaT would be, AND if there was no collision.
-        writer.writerow([numberOfCollisions, initialTime, futureX, futureZ, futureVx, futureVz, datetime.now(), particleNumber])
+        writer.writerow([numberOfCollisions, initialTime, futureX, futureZ, futureVx, futureVz, datetime.now(), particleNumber+1])
       else: # check if it's crossing the other boundary, then we can skip a lot of computations
         if abs(pastZ) >= averageRadius-wallAmplitude and abs(futureZ) < averageRadius-wallAmplitude:
           if pastZ < 0: #going from lower to upper
@@ -527,7 +520,7 @@ def sim1(wallWavelength, wallAmplitude, averageRadius, initialFlow, velocityVari
           deltaT = np.sqrt(((futureX-pastX)**2+(futureZ-pastZ)**2)/(futureVx**2+futureVz**2))
           #check to see if this time difference if larger than the time left. If so, just travel with time left
           if deltaT > time:
-            writer.writerow([numberOfCollisions, initialTime, pastX+futureVx*time, pastZ+futureVz*time, futureVx, futureVz, datetime.now(), particleNumber])
+            writer.writerow([numberOfCollisions, initialTime, pastX+futureVx*time, pastZ+futureVz*time, futureVx, futureVz, datetime.now(), particleNumber+1])
             deltaT = time
       pastX = futureX
       pastZ = futureZ
@@ -546,16 +539,14 @@ def runSimulations(wallWavelength_t, wallAmplitude_t, averageRadius_t, initialFl
     sim1(wallWavelength_t, wallAmplitude_t, averageRadius_t, initialFlow_t, velocityVariance_t, time_t, i)
 
   data = np.genfromtxt(fileName, delimiter=",", names=["numCols","time","X","Z","Vx","Vz","numPart"])[1:]
-  plotFirstTrajectory(data, wall, wallWavelength_t, number_sims)
-
+ 
   return data, wall
 
 def visualize(dataFile, wallWavelength_v, wallAmplitude_v, averageRadius_v, initialFlow_v, velocityVariance_v, time_v, averageVelocityPlotBinNumber=20, numTimeIntervals=200):
   def wallFunction(x):
     return averageRadius_v + wallAmplitude_v*np.cos(2*np.pi*x/wallWavelength_v)
 
-  printInfo(dataFile, wallWavelength_v, wallAmplitude_v)
-  plotInitialCoordinates(dataFile, wallFunction, averageRadius_v, wallAmplitude_v)
+  plotInitialCoordinates(dataFile, wallFunction, wallWavelength_v, averageRadius_v, wallAmplitude_v)
   plotFinalCoordinates(dataFile, averageRadius_v, wallAmplitude_v)
   plotFinalCoordinateFractions(dataFile, wallWavelength_v, wallFunction, averageRadius_v, wallAmplitude_v)
   plotVelocityModuli(dataFile, averageVelocityPlotBinNumber)
