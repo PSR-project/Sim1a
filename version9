@@ -486,7 +486,10 @@ def plotBounces(dataMatrix, numberIntervals, time_plot):
       prevSign = 0
       numSimulations += 1
     else:
-      bouncesHist[nthBounce-1] += 1
+      if nthBounce > 8:
+        bouncesHist[-1] += 1
+      else:
+        bouncesHist[nthBounce-1] += 1
       while intervalIndex*time_plot/numberIntervals <= time:
         averageNumberClumps[intervalIndex] += numClumps
         averageNumberConsecutiveBounces[intervalIndex] += numRepeatBounces
